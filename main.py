@@ -1,9 +1,13 @@
-import pygame
-import neat
-import time
 import os
 import random
-from pygame.sprite import Sprite, Group
+import time
+from Dot import Dot
+from Energizer import Energizer
+from Ghost import Ghost
+from PacMan import PacMan
+import neat
+import pygame
+import pickle
 from pygame.locals import (
     RLEACCEL,
     K_UP,
@@ -14,258 +18,255 @@ from pygame.locals import (
     KEYDOWN,
     QUIT
 )
+from pygame.sprite import Sprite, Group
 
-'''
-PAC MAN:
-3 lives
-dots -- all dots eaten? proceed tp next level
-pacman
-ghosts -- color : Red, Pink, Cyan, Orange -- All 
-    - pm loses one life when comes in contact
-energizers
-'''
-pygame.init()
-
-# Game screen size
-SCREEN_WIDTH = 500
-SCREEN_HEIGHT = 500
-
-# Global vars
+SCREEN_WIDTH = 100
+SCREEN_HEIGHT = 100
 DIRECTIONS = [-1, 1, -2, 2]
+IMG_WIDTH = 10
+IMG_HEIGHT = 10
+SPEED_NORMAL_PAC = IMG_WIDTH
+
+# Different for each genome
 ghosts_vulnerable = False
-dots_remaining = 1
-SPEED_NORMAL_PAC = 20
+enemies = None
+energizers = None
+dots = None
+all_sprites = None
+screen_surface = None
+pac = None
+dots_remaining = None
+clock = None
+p = None
+stats = None
 
 
-# Define game objects
-class PacMan(Sprite):
-    def __init__(self):
-        super(PacMan, self).__init__()
-        # surf is used to control the graphical representation of pac man
-        # self.surf = pygame.Surface((75, 25))
-        # self.surf.fill((255, 255, 255))
-        img = pygame.image.load('pacman.png').convert_alpha()
-        img = pygame.transform.scale(img, (50, 50))
-        self.surf = img
-        self.surf.set_colorkey((255, 255, 255), RLEACCEL)
-        # rect is the underlying rectangle for surf -- used to control the position
-        self.rect = self.surf.get_rect()
-        # speed is the number of pixels moved in one frame
-        self.speed = SPEED_NORMAL_PAC
-        self.direction = 2
-
-    '''
-    -1 = up, 1 = down, -2= left, 2= right
-    rotation happens anti-clockwise
-    '''
-
-    def change_direction(self, pressed_keys):
-        if pressed_keys[K_UP]:
-            # TODO: Issue here: image moves back to top left from wherever
-            if self.direction != -1:
-                angle = 180 if self.direction == 1 else (270 if self.direction == -2 else 90)
-                self.surf = pygame.transform.rotate(self.surf, angle)
-                self.direction = -1
-        elif pressed_keys[K_DOWN]:
-            if self.direction != 1:
-                angle = 180 if self.direction == -1 else (90 if self.direction == -2 else 270)
-                self.surf = pygame.transform.rotate(self.surf, angle)
-                self.direction = 1
-        elif pressed_keys[K_LEFT]:
-            if self.direction != -2:
-                angle = 90 if self.direction == -1 else (180 if self.direction == 2 else 270)
-                self.surf = pygame.transform.rotate(self.surf, angle)
-                self.direction = -2
-        elif pressed_keys[K_RIGHT]:
-            if self.direction != 2:
-                angle = 270 if self.direction == -1 else (180 if self.direction == -2 else 90)
-                self.surf = pygame.transform.rotate(self.surf, angle)
-                self.direction = 2
-
-    def move(self, obstacle_in_front=False):
-        if obstacle_in_front:
-            speed = 0
-            return
-        else:
-            self.speed = SPEED_NORMAL_PAC
-
-        steps_y = 0 if abs(self.direction) == 2 else self.speed * self.direction
-        steps_x = 0 if abs(self.direction) == 1 else self.speed * self.direction / 2
-        # Prevent going out of screen
-        if self.rect.right + steps_x > SCREEN_WIDTH:
-            steps_x = SCREEN_WIDTH - self.rect.right
-            self.speed = 0
-        elif self.rect.left + steps_x < 0:
-            steps_x = -self.rect.left
-            self.speed = 0
-        if self.rect.bottom + steps_y > SCREEN_HEIGHT:
-            steps_y = SCREEN_HEIGHT - self.rect.bottom
-            self.speed = 0
-        elif self.rect.top + steps_y < 0:
-            steps_y = -self.rect.top
-            self.speed = 0
-
-        # Move it!
-        self.rect = self.rect.move(steps_x, steps_y)
+def reset_global():
+    global ghosts_vulnerable, enemies, energizers, dots, all_sprites, screen_surface, pac, dots_remaining, clock, p, stats
+    ghosts_vulnerable = False
+    enemies = None
+    energizers = None
+    dots = None
+    all_sprites = None
+    screen_surface = None
+    pac = None
+    dots_remaining = None
+    clock = None
+    p = None
+    stats = None
 
 
-class Ghost(Sprite):
-    def __init__(self, img_loc):
-        super(Ghost, self).__init__()
-        self.img_path = img_loc
-        img = pygame.image.load(img_loc)
-        img = pygame.transform.scale(img, (40, 40))
-        self.surf = img.convert()
-        # https://www.kite.com/python/docs/pygame.Surface.set_colorkey
-        self.surf.set_colorkey((255, 255, 255), RLEACCEL)
-        self.surf.set_alpha(255)
-        self.rect = self.surf.get_rect(center=(100, 100))
-        self.direction = 2
-        self.speed = random.randint(5, 20)
-        self.infected_last = None
+def game_loop(genomes, config, draw=False):
+    global enemies, ghosts_vulnerable, pac, dots_remaining, screen_surface, all_sprites, dots, clock, energizers
+    for genome_id, genome in genomes:
+        # For each genome, we average out the fitness over 10 simulations
+        # Trying to average out over ghost's randomness
+        ctr = 10
+        net = neat.nn.FeedForwardNetwork.create(genome, config)
+        cumulative_fitness = 0
+        while (ctr):
+            ctr -= 1
+            reset_global()
+            initialize_pygame()
+            running = True
+            num_moves = 150
+            while running:
+                for event in pygame.event.get():
+                    if event.type == QUIT:
+                        running = False
+                        break
 
-    def pick_another_direction(self):
-        current_dir = self.direction
-        possible_dirs = [d for d in DIRECTIONS if d != current_dir]
-        new_dir_ind = random.randint(0, len(possible_dirs) - 1)
-        self.direction = possible_dirs[new_dir_ind]
+                if draw:
+                    screen_surface.fill((0, 0, 0))
+                for enemy in enemies:
+                    if enemy.become_normal():
+                        ghosts_vulnerable = False
 
-    def move(self, obstacle_in_front=False):
-        if obstacle_in_front:
-            self.pick_another_direction()
-            return
+                # user operated -- pac.change_direction(pygame.key.get_pressed())
+                # TODO: ADjust for multiple enemies
+                ghost = list(enemies)[0]
+                energizer = list(energizers)[0]
+                inp = [pac.rect.top, pac.rect.bottom, pac.rect.left, pac.rect.right, pac.speed, pac.direction,
+                       ghost.rect.top, ghost.rect.bottom, ghost.rect.left, ghost.rect.right, ghost.speed,
+                       ghost.direction, ghosts_vulnerable]
+                for dot in dots:
+                    if dot.exists:
+                        inp.append(1)
+                    else:
+                        inp.append(0)
 
-        steps_y = 0 if abs(self.direction) == 2 else self.speed * self.direction
-        steps_x = 0 if abs(self.direction) == 1 else self.speed * self.direction / 2
-        # Prevent going out of screen
-        if self.rect.right + steps_x > SCREEN_WIDTH:
-            steps_x = SCREEN_WIDTH - self.rect.right
-            self.pick_another_direction()
-        elif self.rect.left + steps_x < 0:
-            steps_x = -self.rect.left
-            self.pick_another_direction()
-        if self.rect.bottom + steps_y > SCREEN_HEIGHT:
-            steps_y = SCREEN_HEIGHT - self.rect.bottom
-            self.pick_another_direction()
-        elif self.rect.top + steps_y < 0:
-            steps_y = -self.rect.top
-            self.pick_another_direction()
+                for energizer in energizers:
+                    if energizer.exists:
+                        inp.append(1)
+                    else:
+                        inp.append(0)
 
-        # Move it!
-        self.rect.move_ip(steps_x, steps_y)
+                output = net.activate(inp)
+                if output[0] > 0.5:
+                    pac.change_direction({K_UP: True, K_DOWN: False, K_LEFT: False, K_RIGHT: False})
+                elif output[1] > 0.5:
+                    pac.change_direction({K_DOWN: True, K_UP: False, K_LEFT: False, K_RIGHT: False})
+                elif output[2] > 0.5:
+                    pac.change_direction({K_LEFT: True, K_DOWN: False, K_UP: False, K_RIGHT: False})
+                elif output[3] > 0.5:
+                    pac.change_direction({K_RIGHT: True, K_DOWN: False, K_UP: False, K_LEFT: False})
+                # NN output operated --
+                pac.move(SCREEN_WIDTH, SCREEN_HEIGHT)
+                for enemy in enemies:
+                    enemy.move(SCREEN_WIDTH, SCREEN_HEIGHT, DIRECTIONS)
 
-    def run_for_life(self):
-        self.speed *= 5
-        self.infected_last = pygame.time.get_ticks()
+                if draw:
+                    for entity in dots:
+                        if entity.exists:
+                            screen_surface.blit(entity.surf, entity.rect)
 
-    def become_normal(self):
-        if self.infected_last and (pygame.time.get_ticks() - self.infected_last) >= 25000:
-            self.speed /= 5
-            self.infected_last = None
+                    for entity in energizers:
+                        if entity.exists:
+                            screen_surface.blit(entity.surf, entity.rect)
+
+                    for entity in enemies:
+                        screen_surface.blit(entity.surf, entity.rect)
+
+                    screen_surface.blit(pac.surf, pac.rect)
+
+                # check for collisions between pacman and enemies
+                ghost_collided = pygame.sprite.spritecollideany(pac, enemies)
+                if ghost_collided:
+                    if ghosts_vulnerable and ghost_collided.infected_last:
+                        img_path = ghost_collided.img_path
+                        ghost_collided.kill()
+                        # respawn
+                        new_ghost = Ghost(img_path, SPEED_NORMAL_PAC)
+                        enemies.add(new_ghost)
+                        all_sprites.add(new_ghost)
+                    else:
+                        pac.kill()
+                        running = False
+                        break
+
+                # check if pacman consumes a energizer
+                energizer_consumed = pygame.sprite.spritecollideany(pac, energizers)
+                if energizer_consumed and energizer_consumed.exists:
+                    ghosts_vulnerable = True
+                    energizer_consumed.eaten()
+                    for enemy in enemies:
+                        enemy.run_for_life()
+
+                # check if pacman consumes a dot
+                dots_consumed = pygame.sprite.spritecollideany(pac, dots)
+                if dots_consumed and dots_consumed.exists:
+                    dots_consumed.eaten()
+                    dots_remaining -= 1
+                    cumulative_fitness += 1
+
+                if dots_remaining == 0:
+                    running = False
+                    break
+
+                num_moves -= 1
+                if num_moves == 0:
+                    running = False
+                    break
+
+                # now pour contents of screen_surface to user display
+                if draw:
+                    pygame.display.flip()
+
+                # Number of frames per second
+                clock.tick(500)
+
+            pygame.quit()
+        genome.fitness = cumulative_fitness / 10
+        print(genome.fitness)
 
 
-class Energizer(Sprite):
-    def __init__(self, pos):
-        super(Energizer, self).__init__()
-        self.surf = pygame.Surface((20, 20))
-        self.surf.fill((255, 255, 255))
-        self.rect = self.surf.get_rect(center=pos)
+def initialize_neat():
+    global p, stats
+    config_file = os.path.join(os.getcwd(), 'neat_config.ini')
+    config = neat.Config(neat.DefaultGenome, neat.DefaultReproduction, neat.DefaultSpeciesSet, neat.DefaultStagnation,
+                         config_file)
+    # Initial population
+    p = neat.Population(config)
+
+    # Add reporters
+    p.add_reporter(neat.StdOutReporter(True))
+    stats = neat.StatisticsReporter()
+    p.add_reporter(stats)
+    p.add_reporter(neat.Checkpointer(5))
 
 
-class Dot(Sprite):
-    def __init__(self, pos):
-        super(Dot, self).__init__()
-        self.surf = pygame.Surface((2, 2))
-        self.surf.fill((255, 255, 255))
-        self.rect = self.surf.get_rect(center=pos)
+def show_results():
+    pass
 
 
-# Initialize the display screen
-screen_surface = pygame.display.set_mode([SCREEN_WIDTH, SCREEN_HEIGHT])
+def initialize_pygame():
+    global enemies, ghosts_vulnerable, pac, dots_remaining, screen_surface, all_sprites, dots, clock, energizers
 
-running = True
-pac = PacMan()
-ghost = Ghost('ghost1.png')
-enemies = Group()
-enemies.add(ghost)
-IMG_WIDTH = 50
-IMG_HEIGHT = 50
-e = Energizer((SCREEN_WIDTH - IMG_WIDTH / 2, SCREEN_HEIGHT - IMG_HEIGHT / 2))
-energizers = Group()
-energizers.add(e)
-all_sprites = Group()
+    pygame.init()
 
-MARGIN = IMG_WIDTH // 2
-NUM_X = (SCREEN_WIDTH - MARGIN) // (2 + MARGIN)
-NUM_Y = (SCREEN_HEIGHT - MARGIN) // (2 + MARGIN)
-dots_remaining = NUM_X * NUM_Y
-dots = Group()
-for x in range(NUM_X):
-    for y in range(NUM_Y):
-        DOT_WIDTH = 2
-        DOT_HEIGHT = 2
-        dot = Dot(((MARGIN + DOT_WIDTH) * x + MARGIN, (MARGIN + DOT_HEIGHT) * y + MARGIN))
-        dots.add(dot)
-        all_sprites.add(dot)
+    enemies = Group()
+    energizers = Group()
+    dots = Group()
+    all_sprites = Group()
 
-all_sprites.add(pac, ghost, e)
+    # Initialize the display screen
+    screen_surface = pygame.display.set_mode([SCREEN_WIDTH, SCREEN_HEIGHT])
 
-# game clock
-clock = pygame.time.Clock()
+    # Add a pac man
+    pac = PacMan(SPEED_NORMAL_PAC)
 
-while running:
-    for event in pygame.event.get():
-        if event.type == QUIT:
-            running = False
+    # Add ghosts
+    ghost = Ghost('ghost1.png', SPEED_NORMAL_PAC)
 
-    screen_surface.fill((0, 0, 0))
-    for ghost in enemies:
-        ghost.become_normal()
-    pac.change_direction(pygame.key.get_pressed())
+    # Create a ghosts group
+    enemies.add(ghost)
 
-    pac.move()
-    for ghost in enemies:
-        ghost.move()
-    # copy the contents from another_surface to screen_surface
-    for entity in all_sprites:
-        screen_surface.blit(entity.surf, entity.rect)
+    # Create energizers and their group
+    e = Energizer((SCREEN_WIDTH - IMG_WIDTH / 2, SCREEN_HEIGHT - IMG_HEIGHT / 2))
+    energizers.add(e)
 
-    # check for collisions between pacman and enemies
-    ghost_collided = pygame.sprite.spritecollideany(pac, enemies)
-    if ghost_collided:
-        if ghosts_vulnerable:
-            img_path = ghost_collided.img_path
-            ghost_collided.kill()
-            # respawn
-            new_ghost = Ghost(img_path)
-            enemies.add(new_ghost)
-            all_sprites.add(new_ghost)
-        else:
-            pac.kill()
-            running = False
+    # Create dots and add them to a group
+    margin = IMG_WIDTH
+    num_x = (SCREEN_WIDTH) // (margin)
+    num_y = (SCREEN_HEIGHT) // (margin)
+    dots_remaining = num_x * num_y
+    dot_width = 1
+    dot_height = 1
+    for x in range(num_x):
+        for y in range(num_y):
+            dot = Dot((margin * x + margin / 2 - dot_width / 2, margin * y + margin / 2 - dot_height / 2))
+            dots.add(dot)
+            all_sprites.add(dot)
 
-    # check if pacman consumes a energizer
-    energizer_consumed = pygame.sprite.spritecollideany(pac, energizers)
-    if energizer_consumed:
-        ghosts_vulnerable = True
-        energizer_consumed.kill()
-        for ghost in enemies:
-            ghost.run_for_life()
+    all_sprites.add(pac, ghost, e)
 
-    # check if pacman consumes a dot
-    dots_consumed = pygame.sprite.spritecollideany(pac, dots)
-    if dots_consumed:
-        dots_consumed.kill()
-        dots_remaining -= 1
-    print(dots_remaining)
-    if dots_remaining == 0:
-        print('Game over!')
-        running = False
+    # game clock
+    clock = pygame.time.Clock()
 
-    # now pour contents of screen_surface to user display
-    pygame.display.flip()
 
-    # Number of frames per second
-    clock.tick(2.5)
+def main():
+    os.environ["SDL_VIDEODRIVER"] = "dummy"
+    initialize_neat()
 
-pygame.quit()
+    # Run for 300 generations
+    winner_genome = p.run(game_loop, 100)
+    print(f'Best genome:{winner_genome}')
+    with open("winner.pkl", "wb") as f:
+        pickle.dump(winner_genome, f)
+    # pickle the winner
+    # later take it out and simulate without headless
+
+# def main():
+#     global p
+#     initialize_neat()
+#     config_file = os.path.join(os.getcwd(), 'neat_config.ini')
+#     config = neat.Config(neat.DefaultGenome, neat.DefaultReproduction, neat.DefaultSpeciesSet, neat.DefaultStagnation,
+#                          config_file)
+#     with open('winner.pkl','rb') as f:
+#         g = pickle.load(f)
+#     genomes = [('id',g)]
+#     game_loop(genomes=genomes, config=config, draw=True)
+
+
+if __name__ == '__main__':
+    main()
